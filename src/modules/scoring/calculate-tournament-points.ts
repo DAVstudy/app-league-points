@@ -30,7 +30,11 @@ export function calculateTournamentPoints(
 }
 
 function calculatePlacementPoints(result: TournamentResult): number {
-  if (result.playerCount >= 8 && result.placement <= 4) {
+  if (
+    result.playerCount >= 8 &&
+    result.placement >= 2 &&
+    result.placement <= 4
+  ) {
     return TOP_FOUR_POINTS;
   }
 

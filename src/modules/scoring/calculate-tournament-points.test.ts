@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { calculateTournamentPoints } from "./calculate-tournament-points";
 
 describe("calculateTournamentPoints", () => {
-  it("adds attendance, winner, and Top 4 points for a winner with at least 8 players", () => {
+  it("awards attendance and winner points without adding Top 4 points", () => {
     expect(
       calculateTournamentPoints({
         placement: 1,
@@ -12,8 +12,8 @@ describe("calculateTournamentPoints", () => {
     ).toEqual({
       attendance: 5,
       winner: 10,
-      placement: 5,
-      total: 20,
+      placement: 0,
+      total: 15,
     });
   });
 
