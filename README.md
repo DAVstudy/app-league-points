@@ -36,12 +36,16 @@ League Points busca convertir estas reglas en una aplicación verificable y mant
 - El orden debe incluir exactamente una vez a todos los jugadores empatados.
 - Las operaciones protegidas exigen una membresía que coincida con el organizador y la tienda.
 - Una autorización rechazada no ejecuta lecturas ni cambios sobre los datos protegidos.
+- Las tiendas y membresías de organizadores persisten en SQLite tras reiniciar el proceso.
+- Las consultas de membresías siempre están limitadas a una tienda.
+- Una misma membresía de organizador y tienda no puede registrarse dos veces.
 
 ## Tecnologías
 
 - TypeScript
 - Vitest
 - Node.js
+- SQLite mediante `node:sqlite`
 - npm
 
 ## Ejecución local
@@ -51,6 +55,8 @@ npm install
 npm test
 npm run typecheck
 ```
+
+Se requiere Node.js 24 o posterior. En Node.js 24, `node:sqlite` puede emitir una advertencia experimental durante la ejecución.
 
 ## Pruebas
 
@@ -70,17 +76,19 @@ La suite actual cubre:
 - Configuración y bloqueo de políticas de desempate.
 - Resolución mediante playoff, orden manual y uso justificado de la alternativa manual.
 - Autorización exacta por organizador y tienda, incluido el aislamiento entre tiendas.
+- Persistencia de tiendas y membresías después de reabrir la base de datos.
+- Consultas de membresías aisladas por tienda y rechazo de duplicados.
 
 ## Próximos pasos
 
 - Importar resultados de torneos.
-- Agregar persistencia aislada por tienda.
+- Persistir ligas mensuales y torneos con aislamiento por tienda.
 - Implementar sesiones e invitaciones de acceso para organizadores.
 - Construir la interfaz pública de clasificación.
 
 ## Estado del proyecto
 
-Actualmente, el repositorio contiene la base de la lógica de puntuación, la clasificación mensual y la resolución de desempates. La persistencia, la gestión de torneos y la interfaz web se incorporarán incrementalmente.
+Actualmente, el repositorio contiene la lógica de puntuación, la clasificación mensual, la resolución de desempates y la primera frontera de persistencia para tiendas y membresías. La gestión persistente de ligas y torneos y la interfaz web se incorporarán incrementalmente.
 
 ## Aviso
 
