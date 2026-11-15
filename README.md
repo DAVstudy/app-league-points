@@ -31,6 +31,9 @@ League Points busca convertir estas reglas en una aplicación verificable y mant
 - La clasificación mensual acumula los puntos de cada jugador utilizando la fecha programada original de los torneos.
 - Los jugadores con igual puntaje comparten una posición provisional.
 - Los empates que afectan el límite del Top 8 quedan pendientes de desempate.
+- Cada liga configura `PLAYOFF_MATCH` o `MANUAL_ORDER`; la política se bloquea al registrar el primer torneo.
+- Un playoff imposible puede resolverse manualmente, registrando obligatoriamente el motivo.
+- El orden debe incluir exactamente una vez a todos los jugadores empatados.
 
 ## Tecnologías
 
@@ -62,10 +65,11 @@ La suite actual cubre:
 - Clasificación mensual y acumulación por jugador.
 - Posiciones provisionales y límite del Top 8.
 - Empates que requieren desempate para definir la clasificación.
+- Configuración y bloqueo de políticas de desempate.
+- Resolución mediante playoff, orden manual y uso justificado de la alternativa manual.
 
 ## Próximos pasos
 
-- Incorporar políticas configurables de desempate.
 - Importar resultados de torneos.
 - Agregar persistencia aislada por tienda.
 - Implementar acceso protegido para organizadores.
@@ -73,7 +77,7 @@ La suite actual cubre:
 
 ## Estado del proyecto
 
-Actualmente, el repositorio contiene la base de la lógica de puntuación. La persistencia, la gestión de torneos y la interfaz web se incorporarán incrementalmente.
+Actualmente, el repositorio contiene la base de la lógica de puntuación, la clasificación mensual y la resolución de desempates. La persistencia, la gestión de torneos y la interfaz web se incorporarán incrementalmente.
 
 ## Aviso
 

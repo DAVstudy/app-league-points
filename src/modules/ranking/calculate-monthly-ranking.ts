@@ -26,7 +26,7 @@ export type MonthlyRanking = Readonly<{
   entries: ReadonlyArray<MonthlyRankingEntry>;
 }>;
 
-const TOP_CUT_SIZE = 8;
+export const TOP_CUT_SIZE = 8;
 
 export function calculateMonthlyRanking(
   input: MonthlyRankingInput,
