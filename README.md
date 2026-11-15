@@ -28,6 +28,9 @@ League Points busca convertir estas reglas en una aplicación verificable y mant
 - 3 puntos por cada jugador invitado que participa por primera vez en la tienda.
 - Cada invitado se contabiliza una sola vez mediante su Player ID.
 - Los premios por posición son excluyentes; los bonos independientes se acumulan.
+- La clasificación mensual acumula los puntos de cada jugador utilizando la fecha programada original de los torneos.
+- Los jugadores con igual puntaje comparten una posición provisional.
+- Los empates que afectan el límite del Top 8 quedan pendientes de desempate.
 
 ## Tecnologías
 
@@ -56,10 +59,12 @@ La suite actual cubre:
 - Identificación de jugadores nuevos.
 - Puntos por invitaciones.
 - Protección contra invitados duplicados.
+- Clasificación mensual y acumulación por jugador.
+- Posiciones provisionales y límite del Top 8.
+- Empates que requieren desempate para definir la clasificación.
 
 ## Próximos pasos
 
-- Calcular la clasificación de una liga mensual.
 - Incorporar políticas configurables de desempate.
 - Importar resultados de torneos.
 - Agregar persistencia aislada por tienda.
