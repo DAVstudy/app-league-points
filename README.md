@@ -34,6 +34,8 @@ League Points busca convertir estas reglas en una aplicación verificable y mant
 - Cada liga configura `PLAYOFF_MATCH` o `MANUAL_ORDER`; la política se bloquea al registrar el primer torneo.
 - Un playoff imposible puede resolverse manualmente, registrando obligatoriamente el motivo.
 - El orden debe incluir exactamente una vez a todos los jugadores empatados.
+- Las operaciones protegidas exigen una membresía que coincida con el organizador y la tienda.
+- Una autorización rechazada no ejecuta lecturas ni cambios sobre los datos protegidos.
 
 ## Tecnologías
 
@@ -67,12 +69,13 @@ La suite actual cubre:
 - Empates que requieren desempate para definir la clasificación.
 - Configuración y bloqueo de políticas de desempate.
 - Resolución mediante playoff, orden manual y uso justificado de la alternativa manual.
+- Autorización exacta por organizador y tienda, incluido el aislamiento entre tiendas.
 
 ## Próximos pasos
 
 - Importar resultados de torneos.
 - Agregar persistencia aislada por tienda.
-- Implementar acceso protegido para organizadores.
+- Implementar sesiones e invitaciones de acceso para organizadores.
 - Construir la interfaz pública de clasificación.
 
 ## Estado del proyecto
