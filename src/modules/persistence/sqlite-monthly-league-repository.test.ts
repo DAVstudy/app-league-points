@@ -275,4 +275,45 @@ describe("createSqliteMonthlyLeagueRepository", () => {
       leagueRepository.close();
     },
   );
+
+  it("rejects leagues and tournaments whose parent records do not exist", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "league-points-"));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "league-points.sqlite");
+    const storeRepository =
+      createSqliteStoreMembershipRepository(databasePath);
+
+    storeRepository.createStore({ id: "STORE-1", name: "Local League" });
+    storeRepository.close();
+
+    const leagueRepository =
+      createSqliteMonthlyLeagueRepository(databasePath);
+
+    expect(() =>
+      leagueRepository.createMonthlyLeague({
+        storeId: "STORE-UNKNOWN",
+        leagueMonth: "2026-11",
+        tieBreakPolicy: "MANUAL_ORDER",
+      }),
+    ).toThrow();
+
+    leagueRepository.createMonthlyLeague({
+      storeId: "STORE-1",
+      leagueMonth: "2026-11",
+      tieBreakPolicy: "MANUAL_ORDER",
+    });
+
+    expect(() =>
+      leagueRepository.registerTournament({
+        id: "TOURNAMENT-1",
+        storeId: "STORE-1",
+        leagueMonth: "2026-12",
+      }),
+    ).toThrow();
+    expect(
+      leagueRepository.findMonthlyLeague("STORE-UNKNOWN", "2026-11"),
+    ).toBeUndefined();
+
+    leagueRepository.close();
+  });
 });

@@ -51,6 +51,8 @@ export function createSqliteMonthlyLeagueRepository(
 ): MonthlyLeagueRepository {
   const database = new DatabaseSync(databasePath);
 
+  database.exec("PRAGMA foreign_keys = ON;");
+
   database.exec(`
     CREATE TABLE IF NOT EXISTS monthly_leagues (
       store_id TEXT NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
