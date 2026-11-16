@@ -39,6 +39,8 @@ League Points busca convertir estas reglas en una aplicación verificable y mant
 - Las tiendas y membresías de organizadores persisten en SQLite tras reiniciar el proceso.
 - Las consultas de membresías siempre están limitadas a una tienda.
 - Una misma membresía de organizador y tienda no puede registrarse dos veces.
+- Cada tienda conserva como máximo una liga por mes calendario y su política de desempate.
+- El bloqueo de la política se deriva de torneos persistidos para esa tienda y mes.
 
 ## Tecnologías
 
@@ -78,17 +80,19 @@ La suite actual cubre:
 - Autorización exacta por organizador y tienda, incluido el aislamiento entre tiendas.
 - Persistencia de tiendas y membresías después de reabrir la base de datos.
 - Consultas de membresías aisladas por tienda y rechazo de duplicados.
+- Persistencia de ligas mensuales y políticas de desempate por tienda.
+- Bloqueo durable y aislado de la política después de registrar un torneo.
 
 ## Próximos pasos
 
 - Importar resultados de torneos.
-- Persistir ligas mensuales y torneos con aislamiento por tienda.
+- Completar la persistencia de torneos, participantes e invitaciones.
 - Implementar sesiones e invitaciones de acceso para organizadores.
 - Construir la interfaz pública de clasificación.
 
 ## Estado del proyecto
 
-Actualmente, el repositorio contiene la lógica de puntuación, la clasificación mensual, la resolución de desempates y la primera frontera de persistencia para tiendas y membresías. La gestión persistente de ligas y torneos y la interfaz web se incorporarán incrementalmente.
+Actualmente, el repositorio contiene la lógica de puntuación, la clasificación mensual, la resolución de desempates y persistencia SQLite para tiendas, membresías, ligas mensuales y el registro que bloquea sus políticas. Los datos completos de torneos y participantes, además de la interfaz web, se incorporarán incrementalmente.
 
 ## Aviso
 
