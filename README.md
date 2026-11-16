@@ -45,6 +45,10 @@ League Points busca convertir estas reglas en una aplicación verificable y mant
 - La fecha programada original determina el mes de liga, incluso cuando la fecha efectiva corresponde a una reprogramación posterior.
 - Las consultas de torneos e historial de jugadores siempre están limitadas a una tienda.
 - Las asignaciones de invitación exigen que ambos jugadores participen en el mismo torneo y prohíben la autoinvitación.
+- La clasificación protegida se construye desde los torneos persistidos de una tienda y combina puntos base, invitaciones y continuidad.
+- Una pareja miércoles-viernes que cruza el límite del mes no concede puntos de continuidad.
+- Las resoluciones de desempate se conservan como revisiones auditadas con orden completo, método, motivo de fallback, organizador y fecha controlada por la aplicación.
+- Una corrección agrega una revisión sin sobrescribir las anteriores; la última revisión válida determina el orden final del Top 8.
 
 ## Tecnologías
 
@@ -89,17 +93,19 @@ La suite actual cubre:
 - Persistencia atómica de torneos, fechas, participantes, posiciones e invitaciones.
 - Aislamiento de torneos e historial de jugadores por tienda y mes de liga.
 - Validación durable de fechas, posiciones y relaciones entre invitado e invitador.
+- Construcción de la clasificación protegida desde torneos persistidos.
+- Historial auditable de resoluciones y correcciones de desempate.
+- Aplicación de la última resolución válida al empate del límite del Top 8.
 
 ## Próximos pasos
 
 - Importar resultados de torneos.
-- Construir la clasificación mensual desde los torneos persistidos.
 - Implementar sesiones e invitaciones de acceso para organizadores.
 - Construir la interfaz pública de clasificación.
 
 ## Estado del proyecto
 
-Actualmente, el repositorio contiene la lógica de puntuación, la clasificación mensual, la resolución de desempates y persistencia SQLite para tiendas, membresías, ligas mensuales, torneos, participantes e invitaciones. El flujo que construye la clasificación desde estos datos persistidos y la interfaz web se incorporarán incrementalmente.
+Actualmente, el repositorio contiene la lógica de puntuación, la clasificación mensual, la resolución auditable de desempates y persistencia SQLite para tiendas, membresías, ligas mensuales, torneos, participantes e invitaciones. La clasificación protegida ya se construye desde estos datos persistidos; las sesiones, la importación de resultados y la interfaz web se incorporarán incrementalmente.
 
 ## Aviso
 
