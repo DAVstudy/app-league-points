@@ -41,6 +41,10 @@ League Points busca convertir estas reglas en una aplicación verificable y mant
 - Una misma membresía de organizador y tienda no puede registrarse dos veces.
 - Cada tienda conserva como máximo una liga por mes calendario y su política de desempate.
 - El bloqueo de la política se deriva de torneos persistidos para esa tienda y mes.
+- Los torneos conservan sus fechas programada y efectiva, participantes, posiciones y asignaciones de invitación.
+- La fecha programada original determina el mes de liga, incluso cuando la fecha efectiva corresponde a una reprogramación posterior.
+- Las consultas de torneos e historial de jugadores siempre están limitadas a una tienda.
+- Las asignaciones de invitación exigen que ambos jugadores participen en el mismo torneo y prohíben la autoinvitación.
 
 ## Tecnologías
 
@@ -82,17 +86,20 @@ La suite actual cubre:
 - Consultas de membresías aisladas por tienda y rechazo de duplicados.
 - Persistencia de ligas mensuales y políticas de desempate por tienda.
 - Bloqueo durable y aislado de la política después de registrar un torneo.
+- Persistencia atómica de torneos, fechas, participantes, posiciones e invitaciones.
+- Aislamiento de torneos e historial de jugadores por tienda y mes de liga.
+- Validación durable de fechas, posiciones y relaciones entre invitado e invitador.
 
 ## Próximos pasos
 
 - Importar resultados de torneos.
-- Completar la persistencia de torneos, participantes e invitaciones.
+- Construir la clasificación mensual desde los torneos persistidos.
 - Implementar sesiones e invitaciones de acceso para organizadores.
 - Construir la interfaz pública de clasificación.
 
 ## Estado del proyecto
 
-Actualmente, el repositorio contiene la lógica de puntuación, la clasificación mensual, la resolución de desempates y persistencia SQLite para tiendas, membresías, ligas mensuales y el registro que bloquea sus políticas. Los datos completos de torneos y participantes, además de la interfaz web, se incorporarán incrementalmente.
+Actualmente, el repositorio contiene la lógica de puntuación, la clasificación mensual, la resolución de desempates y persistencia SQLite para tiendas, membresías, ligas mensuales, torneos, participantes e invitaciones. El flujo que construye la clasificación desde estos datos persistidos y la interfaz web se incorporarán incrementalmente.
 
 ## Aviso
 
