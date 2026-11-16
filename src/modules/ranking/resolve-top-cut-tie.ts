@@ -33,7 +33,7 @@ type ManualFallbackInput =
     fallbackReason: string;
   }>;
 
-type ResolveTopCutTieInput =
+export type ResolveTopCutTieInput =
   | PlayoffMatchInput
   | ManualOrderInput
   | ManualFallbackInput;
@@ -44,7 +44,7 @@ type ResolvedPlayer = Readonly<{
   topCutStatus: TopCutStatus;
 }>;
 
-type ResolveTopCutTieResult =
+export type ResolveTopCutTieResult =
   | Readonly<{
     ok: true;
     resolvedPlayers: ReadonlyArray<ResolvedPlayer>;
