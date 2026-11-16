@@ -29,6 +29,22 @@ export type PlayerTournamentHistoryQuery = Readonly<{
   originalScheduledDate: string;
 }>;
 
+export type TieBreakResolutionRecord = Readonly<{
+  storeId: string;
+  leagueMonth: string;
+  configuredPolicy: TieBreakPolicy;
+  resolutionMethod: TieBreakPolicy;
+  orderedPlayerIds: ReadonlyArray<string>;
+  fallbackReason?: string;
+  recordedByOrganizerId: string;
+  recordedAt: string;
+}>;
+
+export type TieBreakResolutionRevision = TieBreakResolutionRecord &
+  Readonly<{
+    revision: number;
+  }>;
+
 type CreateMonthlyLeagueResult =
   | Readonly<{ ok: true }>
   | Readonly<{
@@ -67,6 +83,11 @@ export interface MonthlyLeagueRepository {
     leagueMonth: string,
   ): ReadonlyArray<TournamentRegistration>;
   countPlayerTournamentsBefore(query: PlayerTournamentHistoryQuery): number;
+  recordTieBreakResolution(resolution: TieBreakResolutionRecord): void;
+  findTieBreakResolutionHistory(
+    storeId: string,
+    leagueMonth: string,
+  ): ReadonlyArray<TieBreakResolutionRevision>;
   close(): void;
 }
 
@@ -129,8 +150,72 @@ export function createSqliteMonthlyLeagueRepository(
       PRIMARY KEY (tournament_id, player_id),
       FOREIGN KEY (tournament_id, invited_by_player_id)
         REFERENCES tournament_participants (tournament_id, player_id)
-        DEFERRABLE INITIALLY DEFERRED
+      DEFERRABLE INITIALLY DEFERRED
     ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS tie_break_resolution_revisions (
+      store_id TEXT NOT NULL,
+      league_month TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK (revision > 0),
+      configured_policy TEXT NOT NULL CHECK (
+        configured_policy IN ('MANUAL_ORDER', 'PLAYOFF_MATCH')
+      ),
+      resolution_method TEXT NOT NULL CHECK (
+        resolution_method IN ('MANUAL_ORDER', 'PLAYOFF_MATCH')
+      ),
+      fallback_reason TEXT,
+      recorded_by_organizer_id TEXT NOT NULL,
+      recorded_at TEXT NOT NULL,
+      PRIMARY KEY (store_id, league_month, revision),
+      FOREIGN KEY (store_id, league_month)
+        REFERENCES monthly_leagues (store_id, league_month)
+        ON DELETE CASCADE,
+      FOREIGN KEY (store_id, recorded_by_organizer_id)
+        REFERENCES organizer_memberships (store_id, organizer_id),
+      CHECK (
+        (
+          configured_policy = 'MANUAL_ORDER'
+          AND resolution_method = 'MANUAL_ORDER'
+          AND fallback_reason IS NULL
+        ) OR (
+          configured_policy = 'PLAYOFF_MATCH'
+          AND resolution_method = 'PLAYOFF_MATCH'
+          AND fallback_reason IS NULL
+        ) OR (
+          configured_policy = 'PLAYOFF_MATCH'
+          AND resolution_method = 'MANUAL_ORDER'
+          AND length(trim(fallback_reason)) > 0
+        )
+      )
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS tie_break_resolution_players (
+      store_id TEXT NOT NULL,
+      league_month TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      order_index INTEGER NOT NULL CHECK (order_index >= 0),
+      player_id TEXT NOT NULL,
+      PRIMARY KEY (store_id, league_month, revision, order_index),
+      UNIQUE (store_id, league_month, revision, player_id),
+      FOREIGN KEY (store_id, league_month, revision)
+        REFERENCES tie_break_resolution_revisions (
+          store_id,
+          league_month,
+          revision
+      ) ON DELETE CASCADE
+    ) STRICT;
+
+    CREATE TRIGGER IF NOT EXISTS validate_tie_break_resolution_policy
+    BEFORE INSERT ON tie_break_resolution_revisions
+    WHEN NEW.configured_policy <> (
+      SELECT tie_break_policy
+      FROM monthly_leagues
+      WHERE store_id = NEW.store_id
+        AND league_month = NEW.league_month
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'TIE_BREAK_POLICY_MISMATCH');
+    END;
 
     CREATE TRIGGER IF NOT EXISTS validate_tournament_original_month
     BEFORE INSERT ON tournament_details
@@ -304,6 +389,81 @@ export function createSqliteMonthlyLeagueRepository(
       });
   }
 
+  function findTieBreakResolutionHistory(
+    storeId: string,
+    leagueMonth: string,
+  ): ReadonlyArray<TieBreakResolutionRevision> {
+    return database
+      .prepare(`
+        SELECT
+          revision,
+          configured_policy AS configuredPolicy,
+          resolution_method AS resolutionMethod,
+          fallback_reason AS fallbackReason,
+          recorded_by_organizer_id AS recordedByOrganizerId,
+          recorded_at AS recordedAt
+        FROM tie_break_resolution_revisions
+        WHERE store_id = ? AND league_month = ?
+        ORDER BY revision ASC
+      `)
+      .all(storeId, leagueMonth)
+      .map((row): TieBreakResolutionRevision => {
+        if (
+          typeof row.revision !== "number" ||
+          !Number.isSafeInteger(row.revision) ||
+          (row.configuredPolicy !== "MANUAL_ORDER" &&
+            row.configuredPolicy !== "PLAYOFF_MATCH") ||
+          (row.resolutionMethod !== "MANUAL_ORDER" &&
+            row.resolutionMethod !== "PLAYOFF_MATCH") ||
+          (row.fallbackReason !== null &&
+            typeof row.fallbackReason !== "string") ||
+          typeof row.recordedByOrganizerId !== "string" ||
+          typeof row.recordedAt !== "string"
+        ) {
+          throw new Error("INVALID_TIE_BREAK_RESOLUTION_ROW");
+        }
+
+        const orderedPlayerIds = database
+          .prepare(`
+            SELECT player_id AS playerId
+            FROM tie_break_resolution_players
+            WHERE store_id = ?
+              AND league_month = ?
+              AND revision = ?
+            ORDER BY order_index ASC
+          `)
+          .all(storeId, leagueMonth, row.revision)
+          .map((playerRow) => {
+            if (typeof playerRow.playerId !== "string") {
+              throw new Error("INVALID_TIE_BREAK_RESOLUTION_PLAYER_ROW");
+            }
+
+            return playerRow.playerId;
+          });
+
+        const resolution: Omit<
+          TieBreakResolutionRevision,
+          "fallbackReason"
+        > = {
+          revision: row.revision,
+          storeId,
+          leagueMonth,
+          configuredPolicy: row.configuredPolicy,
+          resolutionMethod: row.resolutionMethod,
+          orderedPlayerIds,
+          recordedByOrganizerId: row.recordedByOrganizerId,
+          recordedAt: row.recordedAt,
+        };
+
+        return row.fallbackReason === null
+          ? resolution
+          : {
+              ...resolution,
+              fallbackReason: row.fallbackReason,
+            };
+      });
+  }
+
   return {
     createMonthlyLeague(league: MonthlyLeague) {
       const result = database
@@ -456,6 +616,85 @@ export function createSqliteMonthlyLeagueRepository(
 
       return row.tournamentCount;
     },
+
+    recordTieBreakResolution(resolution: TieBreakResolutionRecord) {
+      if (resolution.orderedPlayerIds.length === 0) {
+        throw new Error("INVALID_TIE_BREAK_ORDER");
+      }
+
+      database.exec("BEGIN IMMEDIATE");
+
+      try {
+        const row = database
+          .prepare(`
+            SELECT COALESCE(MAX(revision), 0) AS latestRevision
+            FROM tie_break_resolution_revisions
+            WHERE store_id = ? AND league_month = ?
+          `)
+          .get(resolution.storeId, resolution.leagueMonth);
+
+        if (
+          row === undefined ||
+          typeof row.latestRevision !== "number" ||
+          !Number.isSafeInteger(row.latestRevision)
+        ) {
+          throw new Error("INVALID_TIE_BREAK_RESOLUTION_REVISION");
+        }
+
+        const revision = row.latestRevision + 1;
+
+        database
+          .prepare(`
+            INSERT INTO tie_break_resolution_revisions (
+              store_id,
+              league_month,
+              revision,
+              configured_policy,
+              resolution_method,
+              fallback_reason,
+              recorded_by_organizer_id,
+              recorded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `)
+          .run(
+            resolution.storeId,
+            resolution.leagueMonth,
+            revision,
+            resolution.configuredPolicy,
+            resolution.resolutionMethod,
+            resolution.fallbackReason ?? null,
+            resolution.recordedByOrganizerId,
+            resolution.recordedAt,
+          );
+
+        const insertPlayer = database.prepare(`
+          INSERT INTO tie_break_resolution_players (
+            store_id,
+            league_month,
+            revision,
+            order_index,
+            player_id
+          ) VALUES (?, ?, ?, ?, ?)
+        `);
+
+        resolution.orderedPlayerIds.forEach((playerId, orderIndex) => {
+          insertPlayer.run(
+            resolution.storeId,
+            resolution.leagueMonth,
+            revision,
+            orderIndex,
+            playerId,
+          );
+        });
+
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    findTieBreakResolutionHistory,
 
     close() {
       database.close();

@@ -1,4 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,6 +7,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createSqliteMonthlyLeagueRepository } from "./sqlite-monthly-league-repository";
 import { createSqliteStoreMembershipRepository } from "./sqlite-store-membership-repository";
+
+async function hashFile(path: string): Promise<string> {
+  const contents = await readFile(path);
+
+  return createHash("sha256").update(contents).digest("hex");
+}
 
 describe("createSqliteMonthlyLeagueRepository", () => {
   const temporaryDirectories: string[] = [];
@@ -53,6 +60,229 @@ describe("createSqliteMonthlyLeagueRepository", () => {
     });
 
     reopenedLeagueRepository.close();
+  });
+
+  it("persists an auditable tie-break resolution after reopening", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "league-points-"));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "league-points.sqlite");
+    const storeRepository =
+      createSqliteStoreMembershipRepository(databasePath);
+
+    storeRepository.createStore({ id: "STORE-1", name: "Local League" });
+    storeRepository.addOrganizerMembership({
+      storeId: "STORE-1",
+      organizerId: "ORGANIZER-1",
+    });
+    storeRepository.close();
+
+    const firstLeagueRepository =
+      createSqliteMonthlyLeagueRepository(databasePath);
+
+    firstLeagueRepository.createMonthlyLeague({
+      storeId: "STORE-1",
+      leagueMonth: "2026-11",
+      tieBreakPolicy: "PLAYOFF_MATCH",
+    });
+    firstLeagueRepository.recordTieBreakResolution({
+      storeId: "STORE-1",
+      leagueMonth: "2026-11",
+      configuredPolicy: "PLAYOFF_MATCH",
+      resolutionMethod: "MANUAL_ORDER",
+      orderedPlayerIds: ["P0001", "P0002"],
+      fallbackReason: "One player could not attend the playoff.",
+      recordedByOrganizerId: "ORGANIZER-1",
+      recordedAt: "2026-11-30T20:00:00.000Z",
+    });
+    firstLeagueRepository.close();
+
+    const reopenedLeagueRepository =
+      createSqliteMonthlyLeagueRepository(databasePath);
+
+    expect(
+      reopenedLeagueRepository.findTieBreakResolutionHistory(
+        "STORE-1",
+        "2026-11",
+      ),
+    ).toEqual([
+      {
+        revision: 1,
+        storeId: "STORE-1",
+        leagueMonth: "2026-11",
+        configuredPolicy: "PLAYOFF_MATCH",
+        resolutionMethod: "MANUAL_ORDER",
+        orderedPlayerIds: ["P0001", "P0002"],
+        fallbackReason: "One player could not attend the playoff.",
+        recordedByOrganizerId: "ORGANIZER-1",
+        recordedAt: "2026-11-30T20:00:00.000Z",
+      },
+    ]);
+
+    reopenedLeagueRepository.close();
+  });
+
+  it("retains the original resolution when an organizer records a correction", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "league-points-"));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "league-points.sqlite");
+    const storeRepository =
+      createSqliteStoreMembershipRepository(databasePath);
+
+    storeRepository.createStore({ id: "STORE-1", name: "Local League" });
+    storeRepository.addOrganizerMembership({
+      storeId: "STORE-1",
+      organizerId: "ORGANIZER-1",
+    });
+    storeRepository.close();
+
+    const leagueRepository =
+      createSqliteMonthlyLeagueRepository(databasePath);
+
+    leagueRepository.createMonthlyLeague({
+      storeId: "STORE-1",
+      leagueMonth: "2026-11",
+      tieBreakPolicy: "PLAYOFF_MATCH",
+    });
+    leagueRepository.recordTieBreakResolution({
+      storeId: "STORE-1",
+      leagueMonth: "2026-11",
+      configuredPolicy: "PLAYOFF_MATCH",
+      resolutionMethod: "MANUAL_ORDER",
+      orderedPlayerIds: ["P0001", "P0002"],
+      fallbackReason: "One player could not attend the playoff.",
+      recordedByOrganizerId: "ORGANIZER-1",
+      recordedAt: "2026-11-30T20:00:00.000Z",
+    });
+    leagueRepository.recordTieBreakResolution({
+      storeId: "STORE-1",
+      leagueMonth: "2026-11",
+      configuredPolicy: "PLAYOFF_MATCH",
+      resolutionMethod: "PLAYOFF_MATCH",
+      orderedPlayerIds: ["P0002", "P0001"],
+      recordedByOrganizerId: "ORGANIZER-1",
+      recordedAt: "2026-11-30T21:00:00.000Z",
+    });
+
+    expect(
+      leagueRepository.findTieBreakResolutionHistory(
+        "STORE-1",
+        "2026-11",
+      ),
+    ).toEqual([
+      {
+        revision: 1,
+        storeId: "STORE-1",
+        leagueMonth: "2026-11",
+        configuredPolicy: "PLAYOFF_MATCH",
+        resolutionMethod: "MANUAL_ORDER",
+        orderedPlayerIds: ["P0001", "P0002"],
+        fallbackReason: "One player could not attend the playoff.",
+        recordedByOrganizerId: "ORGANIZER-1",
+        recordedAt: "2026-11-30T20:00:00.000Z",
+      },
+      {
+        revision: 2,
+        storeId: "STORE-1",
+        leagueMonth: "2026-11",
+        configuredPolicy: "PLAYOFF_MATCH",
+        resolutionMethod: "PLAYOFF_MATCH",
+        orderedPlayerIds: ["P0002", "P0001"],
+        recordedByOrganizerId: "ORGANIZER-1",
+        recordedAt: "2026-11-30T21:00:00.000Z",
+      },
+    ]);
+
+    leagueRepository.close();
+  });
+
+  it("rejects a resolution whose configured policy differs from the league", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "league-points-"));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "league-points.sqlite");
+    const storeRepository =
+      createSqliteStoreMembershipRepository(databasePath);
+
+    storeRepository.createStore({ id: "STORE-1", name: "Local League" });
+    storeRepository.addOrganizerMembership({
+      storeId: "STORE-1",
+      organizerId: "ORGANIZER-1",
+    });
+    storeRepository.close();
+
+    const leagueRepository =
+      createSqliteMonthlyLeagueRepository(databasePath);
+
+    leagueRepository.createMonthlyLeague({
+      storeId: "STORE-1",
+      leagueMonth: "2026-11",
+      tieBreakPolicy: "PLAYOFF_MATCH",
+    });
+
+    expect(() =>
+      leagueRepository.recordTieBreakResolution({
+        storeId: "STORE-1",
+        leagueMonth: "2026-11",
+        configuredPolicy: "MANUAL_ORDER",
+        resolutionMethod: "MANUAL_ORDER",
+        orderedPlayerIds: ["P0001", "P0002"],
+        recordedByOrganizerId: "ORGANIZER-1",
+        recordedAt: "2026-11-30T20:00:00.000Z",
+      }),
+    ).toThrow();
+    expect(
+      leagueRepository.findTieBreakResolutionHistory(
+        "STORE-1",
+        "2026-11",
+      ),
+    ).toEqual([]);
+
+    leagueRepository.close();
+  });
+
+  it("rejects an empty audited final order atomically", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "league-points-"));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "league-points.sqlite");
+    const storeRepository =
+      createSqliteStoreMembershipRepository(databasePath);
+
+    storeRepository.createStore({ id: "STORE-1", name: "Local League" });
+    storeRepository.addOrganizerMembership({
+      storeId: "STORE-1",
+      organizerId: "ORGANIZER-1",
+    });
+    storeRepository.close();
+
+    const leagueRepository =
+      createSqliteMonthlyLeagueRepository(databasePath);
+
+    leagueRepository.createMonthlyLeague({
+      storeId: "STORE-1",
+      leagueMonth: "2026-11",
+      tieBreakPolicy: "MANUAL_ORDER",
+    });
+    const hashBeforeRejection = await hashFile(databasePath);
+
+    expect(() =>
+      leagueRepository.recordTieBreakResolution({
+        storeId: "STORE-1",
+        leagueMonth: "2026-11",
+        configuredPolicy: "MANUAL_ORDER",
+        resolutionMethod: "MANUAL_ORDER",
+        orderedPlayerIds: [],
+        recordedByOrganizerId: "ORGANIZER-1",
+        recordedAt: "2026-11-30T20:00:00.000Z",
+      }),
+    ).toThrow("INVALID_TIE_BREAK_ORDER");
+    expect(
+      leagueRepository.findTieBreakResolutionHistory(
+        "STORE-1",
+        "2026-11",
+      ),
+    ).toEqual([]);
+    expect(await hashFile(databasePath)).toBe(hashBeforeRejection);
+
+    leagueRepository.close();
   });
 
   it("persists a tournament's original and effective dates after reopening", async () => {
