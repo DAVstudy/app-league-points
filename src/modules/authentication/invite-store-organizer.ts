@@ -22,6 +22,13 @@ type SaveOrganizerIdentityResult =
       error: "ORGANIZER_IDENTITY_CONFLICT";
     };
 
+type ClaimOrganizerIdentityResult =
+  | { ok: true; claimToken: string }
+  | {
+      ok: false;
+      error: "ORGANIZER_INVITATION_IN_PROGRESS";
+    };
+
 type PendingOrganizerInvitation = {
   invitedByOrganizerId: string;
   organizerId: string;
@@ -37,6 +44,7 @@ type CreatePendingInvitationResult =
 
 type InviteStoreOrganizerInput = {
   actorOrganizerId: string;
+  invitationAttemptId: string;
   storeId: string;
   inviteeEmail: string;
   memberships: readonly OrganizerMembership[];
@@ -46,8 +54,20 @@ type InviteStoreOrganizerInput = {
   findOrganizerIdentityByEmail: (
     email: string,
   ) => Pick<OrganizerIdentity, "organizerId"> | undefined;
+  claimOrganizerIdentity: (input: {
+    attemptId: string;
+    email: string;
+  }) => ClaimOrganizerIdentityResult;
+  releaseOrganizerIdentityClaim: (input: {
+    attemptId: string;
+    claimToken: string;
+    email: string;
+  }) => void;
   saveOrganizerIdentity: (
-    identity: OrganizerIdentity,
+    identity: OrganizerIdentity & {
+      attemptId: string;
+      claimToken: string;
+    },
   ) => SaveOrganizerIdentityResult;
   createPendingInvitation: (
     invitation: PendingOrganizerInvitation,
@@ -80,9 +100,23 @@ export async function inviteStoreOrganizer(
   let organizerId = existingIdentity?.organizerId;
 
   if (organizerId === undefined) {
+    const claimedIdentity = input.claimOrganizerIdentity({
+      attemptId: input.invitationAttemptId,
+      email: normalizedEmail,
+    });
+
+    if (!claimedIdentity.ok) {
+      return claimedIdentity;
+    }
+
     const invitedOrganizer = await input.sendInvitation(normalizedEmail);
 
     if (!invitedOrganizer.ok) {
+      input.releaseOrganizerIdentityClaim({
+        attemptId: input.invitationAttemptId,
+        claimToken: claimedIdentity.claimToken,
+        email: normalizedEmail,
+      });
       return {
         ok: false,
         error: "ORGANIZER_INVITATION_FAILED",
@@ -93,6 +127,8 @@ export async function inviteStoreOrganizer(
     const savedIdentity = input.saveOrganizerIdentity({
       email: normalizedEmail,
       organizerId,
+      attemptId: input.invitationAttemptId,
+      claimToken: claimedIdentity.claimToken,
     });
 
     if (!savedIdentity.ok) {
