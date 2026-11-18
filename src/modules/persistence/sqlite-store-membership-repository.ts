@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
 import type { OrganizerMembership } from "../authorization/authorize-store-operation";
@@ -55,6 +56,31 @@ type SaveOrganizerIdentityResult =
       error: "ORGANIZER_IDENTITY_CONFLICT";
     };
 
+type CommitFirstOrganizerResult =
+  | { ok: true }
+  | {
+      ok: false;
+      error:
+        | "ORGANIZER_IDENTITY_CONFLICT"
+        | "STORE_ALREADY_PROVISIONED";
+    };
+
+type ClaimFirstOrganizerResult =
+  | { ok: true; claimToken: string }
+  | {
+      ok: false;
+      error:
+        | "ORGANIZER_BOOTSTRAP_IN_PROGRESS"
+        | "STORE_ALREADY_PROVISIONED";
+    };
+
+type RecoverFirstOrganizerClaimResult =
+  | { ok: true }
+  | {
+      ok: false;
+      error: "ORGANIZER_BOOTSTRAP_CLAIM_NOT_FOUND";
+    };
+
 export interface StoreMembershipRepository {
   createStore(store: Store): void;
   findStoreById(storeId: string): Store | undefined;
@@ -65,6 +91,26 @@ export interface StoreMembershipRepository {
     email: string,
   ): OrganizerIdentity | undefined;
   hasOrganizerIdentity(organizerId: string): boolean;
+  claimFirstOrganizer(input: {
+    attemptId: string;
+    email: string;
+    storeId: string;
+  }): ClaimFirstOrganizerResult;
+  releaseFirstOrganizerClaim(input: {
+    attemptId: string;
+    claimToken: string;
+    storeId: string;
+  }): void;
+  recoverFirstOrganizerClaim(input: {
+    attemptId: string;
+    storeId: string;
+  }): RecoverFirstOrganizerClaimResult;
+  commitFirstOrganizer(input: {
+    attemptId: string;
+    claimToken: string;
+    email: string;
+    membership: OrganizerMembership;
+  }): CommitFirstOrganizerResult;
   addOrganizerMembership(
     membership: OrganizerMembership,
   ): AddOrganizerMembershipResult;
@@ -118,7 +164,51 @@ export function createSqliteStoreMembershipRepository(
       invited_by_organizer_id TEXT NOT NULL,
       PRIMARY KEY (store_id, organizer_id)
     ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS first_organizer_claims (
+      store_id TEXT PRIMARY KEY REFERENCES stores(id) ON DELETE CASCADE,
+      attempt_id TEXT NOT NULL,
+      email TEXT NOT NULL COLLATE NOCASE,
+      claim_token TEXT,
+      CHECK (length(trim(email)) > 0 AND email = lower(trim(email)))
+    ) STRICT;
   `);
+
+  const claimColumns = database
+    .prepare("PRAGMA table_info(first_organizer_claims)")
+    .all();
+  const hasClaimAttemptId = claimColumns.some(
+    (column) => column.name === "attempt_id",
+  );
+
+  if (!hasClaimAttemptId) {
+    database.exec(`
+      BEGIN IMMEDIATE;
+      ALTER TABLE first_organizer_claims
+        RENAME TO legacy_first_organizer_claims;
+      CREATE TABLE first_organizer_claims (
+        store_id TEXT PRIMARY KEY REFERENCES stores(id) ON DELETE CASCADE,
+        attempt_id TEXT NOT NULL,
+        email TEXT NOT NULL COLLATE NOCASE,
+        claim_token TEXT,
+        CHECK (length(trim(email)) > 0 AND email = lower(trim(email)))
+      ) STRICT;
+      INSERT INTO first_organizer_claims (
+        store_id,
+        attempt_id,
+        email,
+        claim_token
+      )
+      SELECT
+        store_id,
+        'legacy:' || store_id,
+        email,
+        'ADMINISTRATIVE_RECOVERY_REQUIRED'
+      FROM legacy_first_organizer_claims;
+      DROP TABLE legacy_first_organizer_claims;
+      COMMIT;
+    `);
+  }
 
   return {
     createStore(store: Store) {
@@ -203,6 +293,180 @@ export function createSqliteStoreMembershipRepository(
           `)
           .get(organizerId) !== undefined
       );
+    },
+
+    claimFirstOrganizer({ attemptId, email, storeId }) {
+      database.exec("BEGIN IMMEDIATE");
+
+      try {
+        const existingMembership = database
+          .prepare(`
+            SELECT 1
+            FROM organizer_memberships
+            WHERE store_id = ?
+            LIMIT 1
+          `)
+          .get(storeId);
+
+        if (existingMembership !== undefined) {
+          database.exec("ROLLBACK");
+          return { ok: false, error: "STORE_ALREADY_PROVISIONED" } as const;
+        }
+
+        const claim = database
+          .prepare(`
+            SELECT attempt_id AS attemptId, claim_token AS claimToken, email
+            FROM first_organizer_claims
+            WHERE store_id = ?
+          `)
+          .get(storeId);
+        const claimToken = randomUUID();
+
+        if (claim === undefined) {
+          database
+            .prepare(`
+              INSERT INTO first_organizer_claims (
+                store_id,
+                attempt_id,
+                email,
+                claim_token
+              ) VALUES (?, ?, ?, ?)
+            `)
+            .run(storeId, attemptId, email, claimToken);
+        } else if (
+          claim.attemptId !== attemptId ||
+          claim.email !== email ||
+          claim.claimToken !== null
+        ) {
+          database.exec("ROLLBACK");
+          return {
+            ok: false,
+            error: "ORGANIZER_BOOTSTRAP_IN_PROGRESS",
+          } as const;
+        } else {
+          database
+            .prepare(`
+              UPDATE first_organizer_claims
+              SET claim_token = ?
+              WHERE store_id = ? AND claim_token IS NULL
+            `)
+            .run(claimToken, storeId);
+        }
+
+        database.exec("COMMIT");
+        return { ok: true, claimToken } as const;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    releaseFirstOrganizerClaim({ attemptId, claimToken, storeId }) {
+      database
+        .prepare(`
+          UPDATE first_organizer_claims
+          SET claim_token = NULL
+          WHERE store_id = ? AND attempt_id = ? AND claim_token = ?
+        `)
+        .run(storeId, attemptId, claimToken);
+    },
+
+    recoverFirstOrganizerClaim({ attemptId, storeId }) {
+      const result = database
+        .prepare(`
+          UPDATE first_organizer_claims
+          SET claim_token = NULL
+          WHERE store_id = ? AND attempt_id = ?
+        `)
+        .run(storeId, attemptId);
+
+      if (result.changes === 0) {
+        return {
+          ok: false,
+          error: "ORGANIZER_BOOTSTRAP_CLAIM_NOT_FOUND",
+        } as const;
+      }
+
+      return { ok: true } as const;
+    },
+
+    commitFirstOrganizer({ attemptId, claimToken, email, membership }) {
+      database.exec("BEGIN IMMEDIATE");
+
+      try {
+        const existingMembership = database
+          .prepare(`
+            SELECT 1
+            FROM organizer_memberships
+            WHERE store_id = ?
+            LIMIT 1
+          `)
+          .get(membership.storeId);
+
+        if (existingMembership !== undefined) {
+          database.exec("ROLLBACK");
+          return { ok: false, error: "STORE_ALREADY_PROVISIONED" } as const;
+        }
+
+        const claim = database
+          .prepare(`
+            SELECT attempt_id AS attemptId, claim_token AS claimToken, email
+            FROM first_organizer_claims
+            WHERE store_id = ?
+          `)
+          .get(membership.storeId);
+
+        if (
+          claim?.attemptId !== attemptId ||
+          claim.claimToken !== claimToken ||
+          claim.email !== email
+        ) {
+          database.exec("ROLLBACK");
+          return { ok: false, error: "STORE_ALREADY_PROVISIONED" } as const;
+        }
+
+        const identity = database
+          .prepare(`
+            SELECT organizer_id AS organizerId, email
+            FROM organizer_identities
+            WHERE organizer_id = ? OR email = ? COLLATE NOCASE
+          `)
+          .get(membership.organizerId, email);
+
+        if (identity === undefined) {
+          database
+            .prepare(`
+              INSERT INTO organizer_identities (organizer_id, email)
+              VALUES (?, ?)
+            `)
+            .run(membership.organizerId, email);
+        } else if (
+          identity.organizerId !== membership.organizerId ||
+          identity.email !== email
+        ) {
+          database.exec("ROLLBACK");
+          return { ok: false, error: "ORGANIZER_IDENTITY_CONFLICT" } as const;
+        }
+
+        database
+          .prepare(`
+            INSERT INTO organizer_memberships (store_id, organizer_id)
+            VALUES (?, ?)
+          `)
+          .run(membership.storeId, membership.organizerId);
+        database
+          .prepare(`
+            DELETE FROM first_organizer_claims
+            WHERE store_id = ? AND attempt_id = ? AND claim_token = ?
+          `)
+          .run(membership.storeId, attemptId, claimToken);
+        database.exec("COMMIT");
+
+        return { ok: true } as const;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
     },
 
     addOrganizerMembership(membership: OrganizerMembership) {

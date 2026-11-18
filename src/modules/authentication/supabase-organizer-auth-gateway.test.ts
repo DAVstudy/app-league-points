@@ -5,6 +5,10 @@ import { createSupabaseOrganizerAuthGateway } from "./supabase-organizer-auth-ga
 
 describe("createSupabaseOrganizerAuthGateway", () => {
   const isKnownOrganizerIdentity = async () => true;
+  const listUsers = vi.fn(async () => ({
+    data: { users: [], nextPage: null },
+    error: null,
+  }));
   const acceptsInstalledSupabaseClient = (client: SupabaseClient) =>
     createSupabaseOrganizerAuthGateway(client, isKnownOrganizerIdentity);
 
@@ -24,6 +28,7 @@ describe("createSupabaseOrganizerAuthGateway", () => {
           getUser,
           admin: {
             inviteUserByEmail,
+            listUsers,
           },
         },
       },
@@ -54,6 +59,7 @@ describe("createSupabaseOrganizerAuthGateway", () => {
           getUser,
           admin: {
             inviteUserByEmail: vi.fn(),
+            listUsers,
           },
         },
       },
@@ -81,6 +87,7 @@ describe("createSupabaseOrganizerAuthGateway", () => {
           getUser,
           admin: {
             inviteUserByEmail,
+            listUsers,
           },
         },
       },
@@ -119,6 +126,7 @@ describe("createSupabaseOrganizerAuthGateway", () => {
           getUser,
           admin: {
             inviteUserByEmail,
+            listUsers,
           },
         },
       },
@@ -142,6 +150,7 @@ describe("createSupabaseOrganizerAuthGateway", () => {
           admin: {
             inviteUserByEmail: async () =>
               Promise.reject(new Error("admin secret")),
+            listUsers,
           },
         },
       },
@@ -158,5 +167,44 @@ describe("createSupabaseOrganizerAuthGateway", () => {
 
   it("accepts the installed Supabase client contract", () => {
     expect(acceptsInstalledSupabaseClient).toBeTypeOf("function");
+  });
+
+  it("invites once and reuses that identity during bootstrap retry", async () => {
+    const users: { email: string; id: string }[] = [];
+    const inviteUserByEmail = vi.fn(async (email: string) => {
+      const user = { email, id: "ORG-1" };
+      users.push(user);
+
+      return { data: { user }, error: null };
+    });
+    const gateway = createSupabaseOrganizerAuthGateway(
+      {
+        auth: {
+          getUser: vi.fn(),
+          admin: {
+            inviteUserByEmail,
+            listUsers: vi.fn(async () => ({
+              data: { users, nextPage: null },
+              error: null,
+            })),
+          },
+        },
+      },
+      isKnownOrganizerIdentity,
+    );
+
+    await expect(
+      gateway.provisionOrganizer(" Owner@Example.COM "),
+    ).resolves.toEqual({
+      ok: true,
+      organizerId: "ORG-1",
+    });
+    await expect(
+      gateway.provisionOrganizer("owner@example.com"),
+    ).resolves.toEqual({
+      ok: true,
+      organizerId: "ORG-1",
+    });
+    expect(inviteUserByEmail).toHaveBeenCalledOnce();
   });
 });
