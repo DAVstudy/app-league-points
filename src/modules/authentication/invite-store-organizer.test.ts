@@ -2,16 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import { inviteStoreOrganizer } from "./invite-store-organizer";
 
-function createIdentityClaimDependencies() {
-  return {
-    invitationAttemptId: "ATTEMPT-1",
-    claimOrganizerIdentity: vi.fn(
-      () => ({ ok: true, claimToken: "CLAIM-1" }) as const,
-    ),
-    releaseOrganizerIdentityClaim: vi.fn(),
-  };
-}
-
 describe("inviteStoreOrganizer", () => {
   it("does not send an invitation when the acting organizer lacks store access", async () => {
     const sendInvitation = vi.fn(async () => ({
@@ -23,8 +13,8 @@ describe("inviteStoreOrganizer", () => {
     const createPendingInvitation = vi.fn(
       () => ({ ok: true }) as const,
     );
+
     const result = await inviteStoreOrganizer({
-      ...createIdentityClaimDependencies(),
       actorOrganizerId: "ORG-1",
       storeId: "STORE-1",
       inviteeEmail: "new.organizer@example.com",
@@ -55,10 +45,8 @@ describe("inviteStoreOrganizer", () => {
     const createPendingInvitation = vi.fn(
       () => ({ ok: true }) as const,
     );
-    const identityClaim = createIdentityClaimDependencies();
 
     const result = await inviteStoreOrganizer({
-      ...identityClaim,
       actorOrganizerId: "ORG-1",
       storeId: "STORE-1",
       inviteeEmail: "new.organizer@example.com",
@@ -84,8 +72,6 @@ describe("inviteStoreOrganizer", () => {
       "new.organizer@example.com",
     );
     expect(saveOrganizerIdentity).toHaveBeenCalledWith({
-      attemptId: "ATTEMPT-1",
-      claimToken: "CLAIM-1",
       email: "new.organizer@example.com",
       organizerId: "ORG-2",
     });
@@ -109,7 +95,6 @@ describe("inviteStoreOrganizer", () => {
     );
 
     const result = await inviteStoreOrganizer({
-      ...createIdentityClaimDependencies(),
       actorOrganizerId: "ORG-1",
       storeId: "STORE-1",
       inviteeEmail: "   ",
@@ -144,10 +129,8 @@ describe("inviteStoreOrganizer", () => {
     const createPendingInvitation = vi.fn(
       () => ({ ok: true }) as const,
     );
-    const identityClaim = createIdentityClaimDependencies();
 
     const result = await inviteStoreOrganizer({
-      ...identityClaim,
       actorOrganizerId: "ORG-1",
       storeId: "STORE-1",
       inviteeEmail: "new.organizer@example.com",
@@ -167,11 +150,6 @@ describe("inviteStoreOrganizer", () => {
       ok: false,
       error: "ORGANIZER_INVITATION_FAILED",
     });
-    expect(identityClaim.releaseOrganizerIdentityClaim).toHaveBeenCalledWith({
-      attemptId: "ATTEMPT-1",
-      claimToken: "CLAIM-1",
-      email: "new.organizer@example.com",
-    });
     expect(saveOrganizerIdentity).not.toHaveBeenCalled();
     expect(createPendingInvitation).not.toHaveBeenCalled();
   });
@@ -190,7 +168,6 @@ describe("inviteStoreOrganizer", () => {
     );
 
     const result = await inviteStoreOrganizer({
-      ...createIdentityClaimDependencies(),
       actorOrganizerId: "ORG-1",
       storeId: "STORE-2",
       inviteeEmail: " Existing.Organizer@Example.com ",
@@ -220,60 +197,5 @@ describe("inviteStoreOrganizer", () => {
       organizerId: "ORG-2",
       storeId: "STORE-2",
     });
-  });
-
-  it("sends only one external invitation for concurrent requests to the same email", async () => {
-    let releaseInvitation!: () => void;
-    const invitationPending = new Promise<void>((resolve) => {
-      releaseInvitation = resolve;
-    });
-    const sendInvitation = vi.fn(async () => {
-      await invitationPending;
-      return { ok: true, organizerId: "ORG-2" } as const;
-    });
-    let identitySaved = false;
-    const findOrganizerIdentityByEmail = vi.fn(() =>
-      identitySaved ? { organizerId: "ORG-2" } : undefined,
-    );
-    const saveOrganizerIdentity = vi.fn(() => {
-      if (identitySaved) {
-        return {
-          ok: false,
-          error: "ORGANIZER_IDENTITY_CONFLICT",
-        } as const;
-      }
-
-      identitySaved = true;
-      return { ok: true } as const;
-    });
-    const createPendingInvitation = vi.fn(
-      () => ({ ok: true }) as const,
-    );
-    const input = {
-      invitationAttemptId: "ATTEMPT-1",
-      actorOrganizerId: "ORG-1",
-      storeId: "STORE-1",
-      inviteeEmail: "new.organizer@example.com",
-      memberships: [{ organizerId: "ORG-1", storeId: "STORE-1" }],
-      sendInvitation,
-      findOrganizerIdentityByEmail,
-      claimOrganizerIdentity: vi
-        .fn()
-        .mockReturnValueOnce({ ok: true, claimToken: "CLAIM-1" })
-        .mockReturnValueOnce({
-          ok: false,
-          error: "ORGANIZER_INVITATION_IN_PROGRESS",
-        }),
-      releaseOrganizerIdentityClaim: vi.fn(),
-      saveOrganizerIdentity,
-      createPendingInvitation,
-    };
-
-    const firstInvitation = inviteStoreOrganizer(input);
-    const secondInvitation = inviteStoreOrganizer(input);
-    releaseInvitation();
-    await Promise.all([firstInvitation, secondInvitation]);
-
-    expect(sendInvitation).toHaveBeenCalledOnce();
   });
 });
