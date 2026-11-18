@@ -1,4 +1,5 @@
 type SupabaseAuthUser = {
+  email?: string;
   id: string;
 };
 
@@ -11,11 +12,23 @@ type SupabaseUserResult = {
 
 type SupabaseInviteResult = SupabaseUserResult;
 
+type SupabaseListUsersResult = {
+  data: {
+    nextPage?: number | null;
+    users: SupabaseAuthUser[];
+  };
+  error: unknown | null;
+};
+
 type SupabaseOrganizerAuthClient = {
   auth: {
     getUser(accessToken: string): Promise<SupabaseUserResult>;
     admin: {
       inviteUserByEmail(email: string): Promise<SupabaseInviteResult>;
+      listUsers(params: {
+        page: number;
+        perPage: number;
+      }): Promise<SupabaseListUsersResult>;
     };
   };
 };
@@ -26,6 +39,53 @@ export function createSupabaseOrganizerAuthGateway(
   client: SupabaseOrganizerAuthClient,
   isKnownOrganizerIdentity: IsKnownOrganizerIdentity,
 ) {
+  async function findUserByEmail(email: string) {
+    let page = 1;
+
+    while (true) {
+      const { data, error } = await client.auth.admin.listUsers({
+        page,
+        perPage: 1000,
+      });
+
+      if (error !== null) {
+        return { ok: false } as const;
+      }
+
+      const user = data.users.find(
+        (candidate) => candidate.email?.toLowerCase() === email,
+      );
+
+      if (user !== undefined) {
+        return { ok: true, user } as const;
+      }
+
+      if (data.nextPage == null) {
+        return { ok: true, user: undefined } as const;
+      }
+
+      page = data.nextPage;
+    }
+  }
+
+  async function sendInvitation(inviteeEmail: string) {
+    try {
+      const { data, error } =
+        await client.auth.admin.inviteUserByEmail(inviteeEmail);
+
+      if (error !== null || data.user === null) {
+        return { ok: false } as const;
+      }
+
+      return {
+        ok: true,
+        organizerId: data.user.id,
+      } as const;
+    } catch {
+      return { ok: false } as const;
+    }
+  }
+
   return {
     async verifyAccessToken(accessToken: string) {
       try {
@@ -47,25 +107,28 @@ export function createSupabaseOrganizerAuthGateway(
       }
     },
 
-    async sendInvitation(inviteeEmail: string) {
-      try {
-        const { data, error } =
-          await client.auth.admin.inviteUserByEmail(inviteeEmail);
+    sendInvitation,
 
-        if (error !== null || data.user === null) {
+    async provisionOrganizer(organizerEmail: string) {
+      const normalizedEmail = organizerEmail.trim().toLowerCase();
+
+      try {
+        const existingUser = await findUserByEmail(normalizedEmail);
+
+        if (!existingUser.ok) {
+          return { ok: false } as const;
+        }
+
+        if (existingUser.user !== undefined) {
           return {
-            ok: false,
+            ok: true,
+            organizerId: existingUser.user.id,
           } as const;
         }
 
-        return {
-          ok: true,
-          organizerId: data.user.id,
-        } as const;
+        return sendInvitation(normalizedEmail);
       } catch {
-        return {
-          ok: false,
-        } as const;
+        return { ok: false } as const;
       }
     },
   };

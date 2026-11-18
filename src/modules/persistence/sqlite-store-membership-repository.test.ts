@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -95,6 +96,151 @@ describe("createSqliteStoreMembershipRepository", () => {
 
     expect(repository.hasOrganizerIdentity("ORG-1")).toBe(true);
     expect(repository.hasOrganizerIdentity("PLAYER-1")).toBe(false);
+
+    repository.close();
+  });
+
+  it("atomically commits only the first organizer for a store", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "league-points-"));
+    temporaryDirectories.push(directory);
+    const repository = createSqliteStoreMembershipRepository(
+      join(directory, "league-points.sqlite"),
+    );
+
+    repository.createStore({ id: "STORE-1", name: "Local League" });
+
+    const claim = repository.claimFirstOrganizer({
+      attemptId: "ATTEMPT-1",
+      email: "owner@example.com",
+      storeId: "STORE-1",
+    });
+    expect(claim.ok).toBe(true);
+    if (!claim.ok) {
+      throw new Error("expected first organizer claim");
+    }
+    expect(
+      repository.claimFirstOrganizer({
+        attemptId: "ATTEMPT-1",
+        email: "owner@example.com",
+        storeId: "STORE-1",
+      }),
+    ).toEqual({ ok: false, error: "ORGANIZER_BOOTSTRAP_IN_PROGRESS" });
+    expect(
+      repository.claimFirstOrganizer({
+        attemptId: "ATTEMPT-2",
+        email: "second@example.com",
+        storeId: "STORE-1",
+      }),
+    ).toEqual({ ok: false, error: "ORGANIZER_BOOTSTRAP_IN_PROGRESS" });
+    expect(
+      repository.commitFirstOrganizer({
+        attemptId: "ATTEMPT-1",
+        claimToken: claim.claimToken,
+        email: "owner@example.com",
+        membership: { organizerId: "ORG-1", storeId: "STORE-1" },
+      }),
+    ).toEqual({ ok: true });
+    const databaseHashBeforeRejectedCommit = await hashFile(
+      join(directory, "league-points.sqlite"),
+    );
+    expect(
+      repository.commitFirstOrganizer({
+        attemptId: "ATTEMPT-2",
+        claimToken: "CLAIM-2",
+        email: "second@example.com",
+        membership: { organizerId: "ORG-2", storeId: "STORE-1" },
+      }),
+    ).toEqual({ ok: false, error: "STORE_ALREADY_PROVISIONED" });
+    expect(
+      await hashFile(join(directory, "league-points.sqlite")),
+    ).toBe(databaseHashBeforeRejectedCommit);
+    expect(repository.hasOrganizerIdentity("ORG-2")).toBe(false);
+    expect(repository.findOrganizerMembershipsByStore("STORE-1")).toEqual([
+      { organizerId: "ORG-1", storeId: "STORE-1" },
+    ]);
+
+    repository.close();
+  });
+
+  it("requires explicit recovery before resuming an interrupted claim", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "league-points-"));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "league-points.sqlite");
+    const firstRepository = createSqliteStoreMembershipRepository(databasePath);
+    firstRepository.createStore({ id: "STORE-1", name: "Local League" });
+
+    expect(
+      firstRepository.claimFirstOrganizer({
+        attemptId: "ATTEMPT-1",
+        email: "owner@example.com",
+        storeId: "STORE-1",
+      }).ok,
+    ).toBe(true);
+    firstRepository.close();
+
+    const repository = createSqliteStoreMembershipRepository(databasePath);
+    expect(
+      repository.recoverFirstOrganizerClaim({
+        attemptId: "ATTEMPT-2",
+        storeId: "STORE-1",
+      }),
+    ).toEqual({
+      ok: false,
+      error: "ORGANIZER_BOOTSTRAP_CLAIM_NOT_FOUND",
+    });
+    expect(
+      repository.recoverFirstOrganizerClaim({
+        attemptId: "ATTEMPT-1",
+        storeId: "STORE-1",
+      }),
+    ).toEqual({ ok: true });
+    expect(
+      repository.claimFirstOrganizer({
+        attemptId: "ATTEMPT-1",
+        email: "owner@example.com",
+        storeId: "STORE-1",
+      }).ok,
+    ).toBe(true);
+    expect(
+      repository.claimFirstOrganizer({
+        attemptId: "ATTEMPT-2",
+        email: "second@example.com",
+        storeId: "STORE-1",
+      }),
+    ).toEqual({ ok: false, error: "ORGANIZER_BOOTSTRAP_IN_PROGRESS" });
+
+    repository.close();
+  });
+
+  it("upgrades the previous claim schema before bootstrap", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "league-points-"));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "league-points.sqlite");
+    const legacyDatabase = new DatabaseSync(databasePath);
+
+    legacyDatabase.exec(`
+      CREATE TABLE stores (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE first_organizer_claims (
+        store_id TEXT PRIMARY KEY REFERENCES stores(id) ON DELETE CASCADE,
+        email TEXT NOT NULL COLLATE NOCASE,
+        CHECK (length(trim(email)) > 0 AND email = lower(trim(email)))
+      ) STRICT;
+      INSERT INTO stores (id, name) VALUES ('STORE-1', 'Existing Store');
+    `);
+    legacyDatabase.close();
+
+    const repository = createSqliteStoreMembershipRepository(databasePath);
+
+    expect(
+      repository.claimFirstOrganizer({
+        attemptId: "ATTEMPT-1",
+        email: "owner@example.com",
+        storeId: "STORE-1",
+      }).ok,
+    ).toBe(true);
 
     repository.close();
   });
