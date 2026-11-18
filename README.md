@@ -39,6 +39,11 @@ League Points busca convertir estas reglas en una aplicación verificable y mant
 - Las tiendas y membresías de organizadores persisten en SQLite tras reiniciar el proceso.
 - Las consultas de membresías siempre están limitadas a una tienda.
 - Una misma membresía de organizador y tienda no puede registrarse dos veces.
+- Las sesiones de organizadores derivan la identidad exclusivamente de tokens verificados por Supabase Auth.
+- El registro público está deshabilitado: el primer organizador se provisiona administrativamente y los siguientes ingresan mediante invitación.
+- Una invitación pendiente no concede acceso; la membresía se activa atómicamente cuando la identidad invitada la acepta autenticada.
+- Una misma identidad puede pertenecer a varias tiendas mediante una selección explícita de tienda activa.
+- Cualquier organizador puede revocar otra membresía o la propia, pero SQLite impide eliminar al último organizador activo de una tienda.
 - Cada tienda conserva como máximo una liga por mes calendario y su política de desempate.
 - El bloqueo de la política se deriva de torneos persistidos para esa tienda y mes.
 - Los torneos conservan sus fechas programada y efectiva, participantes, posiciones y asignaciones de invitación.
@@ -56,6 +61,7 @@ League Points busca convertir estas reglas en una aplicación verificable y mant
 - Vitest
 - Node.js
 - SQLite mediante `node:sqlite`
+- Supabase Auth mediante `@supabase/supabase-js`
 - npm
 
 ## Ejecución local
@@ -67,6 +73,15 @@ npm run typecheck
 ```
 
 Se requiere Node.js 24 o posterior. En Node.js 24, `node:sqlite` puede emitir una advertencia experimental durante la ejecución.
+
+## Configuración de Supabase Auth
+
+- Deshabilitar el registro público de usuarios en la configuración de Auth.
+- Crear o invitar al primer organizador desde un entorno administrativo confiable.
+- Ejecutar `auth.admin.inviteUserByEmail` únicamente en el servidor mediante una clave secreta de Supabase.
+- No exponer la clave secreta en el navegador, variables públicas de Vite ni respuestas de la API.
+- Permitir que el organizador invitado establezca su contraseña mediante el enlace enviado por Supabase.
+- Validar cada token de acceso con Supabase antes de derivar el `organizerId` y comprobar la membresía de la tienda activa.
 
 ## Pruebas
 
@@ -88,6 +103,11 @@ La suite actual cubre:
 - Autorización exacta por organizador y tienda, incluido el aislamiento entre tiendas.
 - Persistencia de tiendas y membresías después de reabrir la base de datos.
 - Consultas de membresías aisladas por tienda y rechazo de duplicados.
+- Verificación de sesiones mediante la identidad confirmada por Supabase.
+- Invitaciones pendientes, aceptación autenticada y activación atómica de membresías.
+- Reutilización de una identidad de organizador en varias tiendas.
+- Selección explícita de tienda activa y rechazo de contextos ajenos.
+- Revocación exacta de membresías con protección durable del último organizador.
 - Persistencia de ligas mensuales y políticas de desempate por tienda.
 - Bloqueo durable y aislado de la política después de registrar un torneo.
 - Persistencia atómica de torneos, fechas, participantes, posiciones e invitaciones.
@@ -100,12 +120,12 @@ La suite actual cubre:
 ## Próximos pasos
 
 - Importar resultados de torneos.
-- Implementar sesiones e invitaciones de acceso para organizadores.
+- Integrar la autenticación y las invitaciones en la API y el espacio de organizadores.
 - Construir la interfaz pública de clasificación.
 
 ## Estado del proyecto
 
-Actualmente, el repositorio contiene la lógica de puntuación, la clasificación mensual, la resolución auditable de desempates y persistencia SQLite para tiendas, membresías, ligas mensuales, torneos, participantes e invitaciones. La clasificación protegida ya se construye desde estos datos persistidos; las sesiones, la importación de resultados y la interfaz web se incorporarán incrementalmente.
+Actualmente, el repositorio contiene la lógica de puntuación, la clasificación mensual, la resolución auditable de desempates, autenticación de organizadores mediante Supabase Auth y persistencia SQLite para identidades, invitaciones pendientes, membresías, tiendas, ligas mensuales, torneos y participantes. La clasificación protegida ya se construye desde estos datos persistidos; la integración HTTP, la importación de resultados y la interfaz web se incorporarán incrementalmente.
 
 ## Aviso
 
