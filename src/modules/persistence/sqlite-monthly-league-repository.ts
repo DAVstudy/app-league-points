@@ -91,6 +91,73 @@ export interface MonthlyLeagueRepository {
   close(): void;
 }
 
+const tieBreakResolutionSchema = `
+  CREATE TABLE IF NOT EXISTS tie_break_resolution_revisions (
+    store_id TEXT NOT NULL,
+    league_month TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    configured_policy TEXT NOT NULL CHECK (
+      configured_policy IN ('MANUAL_ORDER', 'PLAYOFF_MATCH')
+    ),
+    resolution_method TEXT NOT NULL CHECK (
+      resolution_method IN ('MANUAL_ORDER', 'PLAYOFF_MATCH')
+    ),
+    fallback_reason TEXT,
+    recorded_by_organizer_id TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (store_id, league_month, revision),
+    FOREIGN KEY (store_id, league_month)
+      REFERENCES monthly_leagues (store_id, league_month)
+      ON DELETE CASCADE,
+    CHECK (
+      (
+        configured_policy = 'MANUAL_ORDER'
+        AND resolution_method = 'MANUAL_ORDER'
+        AND fallback_reason IS NULL
+      ) OR (
+        configured_policy = 'PLAYOFF_MATCH'
+        AND resolution_method = 'PLAYOFF_MATCH'
+        AND fallback_reason IS NULL
+      ) OR (
+        configured_policy = 'PLAYOFF_MATCH'
+        AND resolution_method = 'MANUAL_ORDER'
+        AND length(trim(fallback_reason)) > 0
+      )
+    )
+  ) STRICT;
+`;
+
+const tieBreakResolutionTriggers = `
+  CREATE TRIGGER IF NOT EXISTS validate_tie_break_resolution_policy
+  BEFORE INSERT ON tie_break_resolution_revisions
+  WHEN NEW.configured_policy <> (
+    SELECT tie_break_policy
+    FROM monthly_leagues
+    WHERE store_id = NEW.store_id
+      AND league_month = NEW.league_month
+  )
+  BEGIN
+    SELECT RAISE(ABORT, 'TIE_BREAK_POLICY_MISMATCH');
+  END;
+
+`;
+
+const tieBreakMembershipTrigger = `
+  CREATE TRIGGER validate_tie_break_resolution_membership
+  BEFORE INSERT ON tie_break_resolution_revisions
+  WHEN NOT EXISTS (
+    SELECT 1 FROM organizer_memberships
+    WHERE store_id = NEW.store_id
+      AND organizer_id = NEW.recorded_by_organizer_id
+  ) AND NEW.configured_policy IS (
+    SELECT tie_break_policy FROM monthly_leagues
+    WHERE store_id = NEW.store_id AND league_month = NEW.league_month
+  )
+  BEGIN
+    SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed');
+  END
+`.trim();
+
 export function createSqliteMonthlyLeagueRepository(
   databasePath: string,
 ): MonthlyLeagueRepository {
@@ -153,41 +220,7 @@ export function createSqliteMonthlyLeagueRepository(
       DEFERRABLE INITIALLY DEFERRED
     ) STRICT;
 
-    CREATE TABLE IF NOT EXISTS tie_break_resolution_revisions (
-      store_id TEXT NOT NULL,
-      league_month TEXT NOT NULL,
-      revision INTEGER NOT NULL CHECK (revision > 0),
-      configured_policy TEXT NOT NULL CHECK (
-        configured_policy IN ('MANUAL_ORDER', 'PLAYOFF_MATCH')
-      ),
-      resolution_method TEXT NOT NULL CHECK (
-        resolution_method IN ('MANUAL_ORDER', 'PLAYOFF_MATCH')
-      ),
-      fallback_reason TEXT,
-      recorded_by_organizer_id TEXT NOT NULL,
-      recorded_at TEXT NOT NULL,
-      PRIMARY KEY (store_id, league_month, revision),
-      FOREIGN KEY (store_id, league_month)
-        REFERENCES monthly_leagues (store_id, league_month)
-        ON DELETE CASCADE,
-      FOREIGN KEY (store_id, recorded_by_organizer_id)
-        REFERENCES organizer_memberships (store_id, organizer_id),
-      CHECK (
-        (
-          configured_policy = 'MANUAL_ORDER'
-          AND resolution_method = 'MANUAL_ORDER'
-          AND fallback_reason IS NULL
-        ) OR (
-          configured_policy = 'PLAYOFF_MATCH'
-          AND resolution_method = 'PLAYOFF_MATCH'
-          AND fallback_reason IS NULL
-        ) OR (
-          configured_policy = 'PLAYOFF_MATCH'
-          AND resolution_method = 'MANUAL_ORDER'
-          AND length(trim(fallback_reason)) > 0
-        )
-      )
-    ) STRICT;
+    ${tieBreakResolutionSchema}
 
     CREATE TABLE IF NOT EXISTS tie_break_resolution_players (
       store_id TEXT NOT NULL,
@@ -205,17 +238,7 @@ export function createSqliteMonthlyLeagueRepository(
       ) ON DELETE CASCADE
     ) STRICT;
 
-    CREATE TRIGGER IF NOT EXISTS validate_tie_break_resolution_policy
-    BEFORE INSERT ON tie_break_resolution_revisions
-    WHEN NEW.configured_policy <> (
-      SELECT tie_break_policy
-      FROM monthly_leagues
-      WHERE store_id = NEW.store_id
-        AND league_month = NEW.league_month
-    )
-    BEGIN
-      SELECT RAISE(ABORT, 'TIE_BREAK_POLICY_MISMATCH');
-    END;
+    ${tieBreakResolutionTriggers}
 
     CREATE TRIGGER IF NOT EXISTS validate_tournament_original_month
     BEFORE INSERT ON tournament_details
@@ -245,6 +268,62 @@ export function createSqliteMonthlyLeagueRepository(
       SELECT RAISE(ABORT, 'TOURNAMENT_SCHEDULE_SLOT_ALREADY_EXISTS');
     END;
   `);
+
+  // Membership is checked at insertion, not retained as a historical FK.
+  // Disable FK actions only on this connection while rebuilding the parent;
+  // otherwise dropping it would cascade-delete the retained player orders.
+  database.exec("PRAGMA foreign_keys = OFF;");
+  database.exec("BEGIN IMMEDIATE;");
+  try {
+    const hasMembershipForeignKey = database
+      .prepare("PRAGMA foreign_key_list(tie_break_resolution_revisions)")
+      .all()
+      .some((foreignKey) => foreignKey.table === "organizer_memberships");
+
+    if (hasMembershipForeignKey) {
+      database.exec(`
+        ${tieBreakResolutionSchema.replace(
+          "tie_break_resolution_revisions",
+          "replacement_tie_break_resolution_revisions",
+        )}
+        INSERT INTO replacement_tie_break_resolution_revisions (
+          store_id, league_month, revision, configured_policy,
+          resolution_method, fallback_reason, recorded_by_organizer_id, recorded_at
+        )
+        SELECT store_id, league_month, revision, configured_policy,
+          resolution_method, fallback_reason, recorded_by_organizer_id, recorded_at
+        FROM tie_break_resolution_revisions;
+        DROP TABLE tie_break_resolution_revisions;
+        ALTER TABLE replacement_tie_break_resolution_revisions
+          RENAME TO tie_break_resolution_revisions;
+        ${tieBreakResolutionTriggers}
+      `);
+      if (database.prepare("PRAGMA foreign_key_check").all().length > 0) {
+        throw new Error("TIE_BREAK_HISTORY_MIGRATION_FOREIGN_KEY_VIOLATION");
+      }
+    }
+    // Keep policy and membership rejection mutually exclusive, independent of
+    // trigger ordering. Replace the earlier trigger once on existing databases.
+    const membershipTrigger = database.prepare(`
+      SELECT sql FROM sqlite_schema
+      WHERE type = 'trigger' AND name = 'validate_tie_break_resolution_membership'
+    `).get();
+    if (membershipTrigger?.sql !== tieBreakMembershipTrigger) {
+      database.exec(`
+        DROP TRIGGER IF EXISTS validate_tie_break_resolution_membership;
+        ${tieBreakMembershipTrigger};
+      `);
+    }
+    database.exec("COMMIT;");
+  } catch (error) {
+    database.exec("ROLLBACK;");
+    database.close();
+    throw error;
+  } finally {
+    if (database.isOpen) {
+      database.exec("PRAGMA foreign_keys = ON;");
+    }
+  }
 
   function findMonthlyLeague(
     storeId: string,

@@ -54,6 +54,8 @@ League Points busca convertir estas reglas en una aplicación verificable y mant
 - Una pareja miércoles-viernes que cruza el límite del mes no concede puntos de continuidad.
 - Las resoluciones de desempate se conservan como revisiones auditadas con orden completo, método, motivo de fallback, organizador y fecha controlada por la aplicación.
 - Una corrección agrega una revisión sin sobrescribir las anteriores; la última revisión válida determina el orden final del Top 8.
+- Revocar una membresía conserva el identificador del autor y todo el historial de desempates; no concede permiso para registrar nuevas resoluciones en esa tienda.
+- SQLite comprueba la membresía exacta al registrar cada resolución. Al abrir bases existentes, actualiza únicamente la relación de autoría histórica, sin borrar revisiones, órdenes de jugadores ni otros datos.
 
 ## Tecnologías
 
