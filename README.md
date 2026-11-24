@@ -53,7 +53,8 @@ League Points busca convertir estas reglas en una aplicación verificable y mant
 - La clasificación protegida se construye desde los torneos persistidos de una tienda y combina puntos base, invitaciones y continuidad.
 - Una pareja miércoles-viernes que cruza el límite del mes no concede puntos de continuidad.
 - Las resoluciones de desempate se conservan como revisiones auditadas con orden completo, método, motivo de fallback, organizador y fecha controlada por la aplicación.
-- Una corrección agrega una revisión sin sobrescribir las anteriores; la última revisión válida determina el orden final del Top 8.
+- Una corrección agrega una revisión sin sobrescribir las anteriores; solo la última revisión determina el orden final del Top 8 si corresponde exactamente al grupo empatado actual.
+- Si un torneo posterior cambia los integrantes del grupo empatado, la resolución anterior permanece en el historial pero deja de aplicarse: la clasificación vuelve a mostrar el empate pendiente, sin recurrir a revisiones anteriores.
 - Revocar una membresía conserva el identificador del autor y todo el historial de desempates; no concede permiso para registrar nuevas resoluciones en esa tienda.
 - SQLite comprueba la membresía exacta al registrar cada resolución. Al abrir bases existentes, actualiza únicamente la relación de autoría histórica, sin borrar revisiones, órdenes de jugadores ni otros datos.
 
@@ -117,7 +118,8 @@ La suite actual cubre:
 - Validación durable de fechas, posiciones y relaciones entre invitado e invitador.
 - Construcción de la clasificación protegida desde torneos persistidos.
 - Historial auditable de resoluciones y correcciones de desempate.
-- Aplicación de la última resolución válida al empate del límite del Top 8.
+- Aplicación de la última resolución compatible al empate del límite del Top 8.
+- Conservación del historial y empate pendiente cuando cambia el grupo empatado, sin reutilizar revisiones anteriores.
 
 ## Próximos pasos
 
