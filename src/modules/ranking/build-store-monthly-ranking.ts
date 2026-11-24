@@ -187,12 +187,30 @@ function applyLatestTieBreakResolution(
             resolutionMethod: "MANUAL_ORDER" as const,
             manualOrder: latestResolution.orderedPlayerIds,
           };
-  const resolution = resolveTopCutTie(resolutionInput);
+  // Validate the historical order on its own group before checking applicability.
+  // Malformed audit data must not be mistaken for a later membership change.
+  const resolution = resolveTopCutTie({
+    ...resolutionInput,
+    tiedPlayerIds: latestResolution.orderedPlayerIds.length > 0
+      ? latestResolution.orderedPlayerIds
+      : tie.tiedPlayerIds,
+  });
 
   if (!resolution.ok) {
     throw new Error(
       `INVALID_PERSISTED_TIE_BREAK_RESOLUTION: ${resolution.error}`,
     );
+  }
+
+  const currentTiedPlayerIds = new Set(tie.tiedPlayerIds);
+  const hasSamePlayerGroup =
+    latestResolution.orderedPlayerIds.length === currentTiedPlayerIds.size &&
+    latestResolution.orderedPlayerIds.every((playerId) =>
+      currentTiedPlayerIds.has(playerId),
+    );
+
+  if (!hasSamePlayerGroup) {
+    return ranking;
   }
 
   const resolvedPlayerById = new Map(
