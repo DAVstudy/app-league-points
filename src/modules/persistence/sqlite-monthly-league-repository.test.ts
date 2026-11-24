@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { revokeStoreOrganizerMembership } from "../authentication/revoke-store-organizer-membership";
 import { createSqliteMonthlyLeagueRepository } from "./sqlite-monthly-league-repository";
 import { createSqliteStoreMembershipRepository } from "./sqlite-store-membership-repository";
 
@@ -26,6 +28,247 @@ describe("createSqliteMonthlyLeagueRepository", () => {
         }),
       ),
     );
+  });
+
+  it.each([false, true])("retains audited authorship after revocation (legacy database: %s)", async (legacy) => {
+    const directory = await mkdtemp(join(tmpdir(), "league-points-"));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "league-points.sqlite");
+    const stores = createSqliteStoreMembershipRepository(databasePath);
+    for (const storeId of ["STORE-1", "STORE-2"]) {
+      stores.createStore({ id: storeId, name: storeId });
+      stores.addOrganizerMembership({ storeId, organizerId: "AUTHOR" });
+      stores.addOrganizerMembership({ storeId, organizerId: "KEEPER" });
+    }
+    let leagues = createSqliteMonthlyLeagueRepository(databasePath);
+    const league = {
+      storeId: "STORE-1",
+      leagueMonth: "2026-11",
+      tieBreakPolicy: "PLAYOFF_MATCH",
+    } as const;
+    leagues.createMonthlyLeague(league);
+    const tournament = {
+      id: "TOURNAMENT-1",
+      storeId: league.storeId,
+      leagueMonth: league.leagueMonth,
+      originalScheduledDate: "2026-11-04",
+      effectiveDate: "2026-11-05",
+      participants: [
+        { playerId: "P1", placement: 1 },
+        { playerId: "P2", placement: 2, invitedByPlayerId: "P1" },
+      ],
+    };
+    leagues.registerTournament(tournament);
+    const resolution = {
+      storeId: league.storeId,
+      leagueMonth: league.leagueMonth,
+      configuredPolicy: "PLAYOFF_MATCH",
+      resolutionMethod: "MANUAL_ORDER",
+      fallbackReason: "Playoff unavailable",
+      orderedPlayerIds: ["P2", "P1"],
+      recordedByOrganizerId: "AUTHOR",
+      recordedAt: "2026-11-30T20:00:00.000Z",
+    } as const;
+    leagues.recordTieBreakResolution(resolution);
+    leagues.recordTieBreakResolution({
+      ...resolution,
+      orderedPlayerIds: ["P1", "P2"],
+    });
+    const history = leagues.findTieBreakResolutionHistory("STORE-1", "2026-11");
+    leagues.close();
+
+    if (legacy) {
+      // Rebuild only the fixture's audit table with the original membership FK.
+      // Seeded revisions and child player orders must survive the real upgrade.
+      const database = new DatabaseSync(databasePath);
+      database.exec(`
+        PRAGMA foreign_keys = OFF;
+        BEGIN;
+        CREATE TABLE legacy_revisions (
+          store_id TEXT NOT NULL,
+          league_month TEXT NOT NULL,
+          revision INTEGER NOT NULL CHECK (revision > 0),
+          configured_policy TEXT NOT NULL CHECK (
+            configured_policy IN ('MANUAL_ORDER', 'PLAYOFF_MATCH')
+          ),
+          resolution_method TEXT NOT NULL CHECK (
+            resolution_method IN ('MANUAL_ORDER', 'PLAYOFF_MATCH')
+          ),
+          fallback_reason TEXT,
+          recorded_by_organizer_id TEXT NOT NULL,
+          recorded_at TEXT NOT NULL,
+          PRIMARY KEY (store_id, league_month, revision),
+          FOREIGN KEY (store_id, league_month)
+            REFERENCES monthly_leagues (store_id, league_month) ON DELETE CASCADE,
+          FOREIGN KEY (store_id, recorded_by_organizer_id)
+            REFERENCES organizer_memberships (store_id, organizer_id),
+          CHECK (
+            (configured_policy = 'MANUAL_ORDER' AND resolution_method = 'MANUAL_ORDER'
+              AND fallback_reason IS NULL) OR
+            (configured_policy = 'PLAYOFF_MATCH' AND resolution_method = 'PLAYOFF_MATCH'
+              AND fallback_reason IS NULL) OR
+            (configured_policy = 'PLAYOFF_MATCH' AND resolution_method = 'MANUAL_ORDER'
+              AND length(trim(fallback_reason)) > 0)
+          )
+        ) STRICT;
+        INSERT INTO legacy_revisions SELECT * FROM tie_break_resolution_revisions;
+        DROP TABLE tie_break_resolution_revisions;
+        ALTER TABLE legacy_revisions RENAME TO tie_break_resolution_revisions;
+        COMMIT;
+      `);
+      database.close();
+    }
+
+    leagues = createSqliteMonthlyLeagueRepository(databasePath);
+    const revoke = (actorOrganizerId: string, targetOrganizerId: string) =>
+      revokeStoreOrganizerMembership({
+        actorOrganizerId,
+        targetOrganizerId,
+        storeId: "STORE-1",
+        memberships: stores.findOrganizerMembershipsByStore("STORE-1"),
+        removeMembership: stores.removeOrganizerMembership,
+      });
+    expect(revoke("KEEPER", "AUTHOR")).toEqual({ ok: true });
+    expect(stores.findOrganizerMembershipsByStore("STORE-1")).toEqual([
+      { storeId: "STORE-1", organizerId: "KEEPER" },
+    ]);
+    expect(stores.findOrganizerMembershipsByStore("STORE-2")).toEqual([
+      { storeId: "STORE-2", organizerId: "AUTHOR" },
+      { storeId: "STORE-2", organizerId: "KEEPER" },
+    ]);
+    const hashBeforeRejections = await hashFile(databasePath);
+    expect(revoke("AUTHOR", "KEEPER")).toEqual({
+      ok: false,
+      error: "STORE_ACCESS_DENIED",
+    });
+    expect(stores.removeOrganizerMembership({
+      storeId: "STORE-1",
+      organizerId: "KEEPER",
+    })).toEqual({ ok: false, error: "LAST_STORE_ORGANIZER_REQUIRED" });
+    expect(stores.findOrganizerMembershipsByStore("STORE-1")).toEqual([
+      { storeId: "STORE-1", organizerId: "KEEPER" },
+    ]);
+    expect(
+      leagues.findTieBreakResolutionHistory("STORE-1", "2026-11"),
+    ).toEqual(history);
+    expect(await hashFile(databasePath)).toBe(hashBeforeRejections);
+    for (const recordedByOrganizerId of ["AUTHOR", "UNKNOWN"]) {
+      expect(() => leagues.recordTieBreakResolution({
+        ...resolution,
+        recordedByOrganizerId,
+      })).toThrow();
+      expect(
+        leagues.findTieBreakResolutionHistory("STORE-1", "2026-11"),
+      ).toEqual(history);
+      expect(leagues.findTournament("STORE-1", tournament.id)).toEqual(tournament);
+      expect(await hashFile(databasePath)).toBe(hashBeforeRejections);
+    }
+    // An active author still cannot bypass the existing policy validation.
+    expect(() => leagues.recordTieBreakResolution({
+      ...resolution,
+      recordedByOrganizerId: "KEEPER",
+      configuredPolicy: "MANUAL_ORDER",
+    })).toThrow("TIE_BREAK_POLICY_MISMATCH");
+    expect(await hashFile(databasePath)).toBe(hashBeforeRejections);
+    leagues.recordTieBreakResolution({ ...resolution, recordedByOrganizerId: "KEEPER" });
+    leagues.close();
+    stores.close();
+
+    leagues = createSqliteMonthlyLeagueRepository(databasePath);
+    const reopenedStores = createSqliteStoreMembershipRepository(databasePath);
+    expect(
+      leagues.findTieBreakResolutionHistory("STORE-1", "2026-11"),
+    ).toEqual([
+      ...history,
+      { ...resolution, recordedByOrganizerId: "KEEPER", revision: 3 },
+    ]);
+    expect(leagues.findMonthlyLeague("STORE-1", "2026-11")).toEqual(league);
+    expect(leagues.findTournament("STORE-1", tournament.id)).toEqual(tournament);
+    expect(reopenedStores.findOrganizerMembershipsByStore("STORE-1")).toEqual([
+      { storeId: "STORE-1", organizerId: "KEEPER" },
+    ]);
+    leagues.close();
+    reopenedStores.close();
+  });
+
+  it.each([false, true])("preserves policy error precedence (installed old trigger: %s)", async (oldTrigger) => {
+    const directory = await mkdtemp(join(tmpdir(), "league-points-"));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "league-points.sqlite");
+    const stores = createSqliteStoreMembershipRepository(databasePath);
+    for (const [storeId, organizerId] of [["A", "KEEPER"], ["B", "AUTHOR"]] as const) {
+      stores.createStore({ id: storeId, name: storeId });
+      stores.addOrganizerMembership({ storeId, organizerId });
+    }
+    const league = {
+      storeId: "A",
+      leagueMonth: "2026-11",
+      tieBreakPolicy: "PLAYOFF_MATCH",
+    } as const;
+    const resolution = {
+      storeId: "A",
+      leagueMonth: "2026-11",
+      configuredPolicy: "PLAYOFF_MATCH",
+      resolutionMethod: "PLAYOFF_MATCH",
+      orderedPlayerIds: ["P1", "P2"],
+      recordedByOrganizerId: "KEEPER",
+      recordedAt: "2026-11-30T20:00:00.000Z",
+    } as const;
+    let leagues = createSqliteMonthlyLeagueRepository(databasePath);
+    leagues.createMonthlyLeague(league);
+    leagues.recordTieBreakResolution(resolution);
+    const history = leagues.findTieBreakResolutionHistory("A", "2026-11");
+    leagues.close();
+    if (oldTrigger) {
+      const database = new DatabaseSync(databasePath);
+      database.exec(`
+        DROP TRIGGER validate_tie_break_resolution_membership;
+        CREATE TRIGGER validate_tie_break_resolution_membership
+        BEFORE INSERT ON tie_break_resolution_revisions
+        WHEN NOT EXISTS (
+          SELECT 1 FROM organizer_memberships
+          WHERE store_id = NEW.store_id
+            AND organizer_id = NEW.recorded_by_organizer_id
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed');
+        END;
+      `);
+      database.close();
+    }
+    leagues = createSqliteMonthlyLeagueRepository(databasePath);
+    const hashBeforeRejections = await hashFile(databasePath);
+    for (let reopen = 0; reopen < 2; reopen += 1) {
+      for (const recordedByOrganizerId of ["AUTHOR", "UNKNOWN"]) {
+        for (const configuredPolicy of ["MANUAL_ORDER", "PLAYOFF_MATCH"] as const) {
+          expect(() => leagues.recordTieBreakResolution({
+            ...resolution,
+            recordedByOrganizerId,
+            configuredPolicy,
+            resolutionMethod: configuredPolicy,
+          })).toThrow(expect.objectContaining({
+            message: configuredPolicy === "MANUAL_ORDER"
+              ? "TIE_BREAK_POLICY_MISMATCH"
+              : "FOREIGN KEY constraint failed",
+          }));
+          expect(leagues.findTieBreakResolutionHistory("A", "2026-11")).toEqual(history);
+          expect(leagues.findMonthlyLeague("A", "2026-11")).toEqual(league);
+          expect(stores.findOrganizerMembershipsByStore("A")).toEqual([
+            { storeId: "A", organizerId: "KEEPER" },
+          ]);
+          expect(await hashFile(databasePath)).toBe(hashBeforeRejections);
+        }
+      }
+      leagues.close();
+      leagues = createSqliteMonthlyLeagueRepository(databasePath);
+      expect(await hashFile(databasePath)).toBe(hashBeforeRejections);
+    }
+    leagues.recordTieBreakResolution(resolution);
+    expect(leagues.findTieBreakResolutionHistory("A", "2026-11")).toEqual([
+      ...history, { ...resolution, revision: 2 },
+    ]);
+    leagues.close();
+    stores.close();
   });
 
   it("persists a store-scoped monthly league after the repository is reopened", async () => {
